@@ -19,10 +19,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ---------------- Trivy FS Scan ----------------
-      - name: Run Trivy File System Scan
-        run: trivy fs . > trivyfs.txt
-
       # ---------------- Set Docker Image Tag ----------------
       - name: Set Docker Image Tag
         run: echo "IMAGE_TAG=${{ secrets.DOCKER_USERNAME }}/amazon:${{ github.run_number }}" >> $GITHUB_ENV
@@ -41,35 +37,11 @@ jobs:
       - name: Push Docker Image
         run: docker push $IMAGE_TAG
 
-      # ---------------- Trivy Image Scan ----------------
-      - name: Run Trivy Image Scan
-        run: |
-          echo "🔍 Running Trivy image scan on $IMAGE_TAG"
-
-          trivy image --exit-code 0 --format json -o trivy-image-report.json $IMAGE_TAG
-
-          {
-            echo "<html><body>"
-            echo "<h2>Trivy Image Scan Report for $IMAGE_TAG</h2><pre>"
-            jq '.' trivy-image-report.json
-            echo "</pre></body></html>"
-          } > trivy-image-report.html
-
       # ---------------- Deploy Container ----------------
       - name: Deploy Container
         run: |
           docker rm -f amazon || true
           docker run -d --name amazon -p 80:80 $IMAGE_TAG
-
-      # ---------------- Upload Reports ----------------
-      - name: Upload Scan Reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: scan-reports
-          path: |
-            trivyfs.txt
-            trivy-image-report.json
-            trivy-image-report.html
 
       # ---------------- Email Notification ----------------
       - name: Send Email Notification
@@ -90,5 +62,4 @@ jobs:
             <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Build</a></p>
           attachments: |
             trivyfs.txt
-            trivy-image-report.json
-            trivy-image-report.html
+            
