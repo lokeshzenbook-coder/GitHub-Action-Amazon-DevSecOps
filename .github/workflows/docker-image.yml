@@ -10,64 +10,51 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout Code
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
       # ---------------- SonarQube Scan ----------------
-      - uses: sonarsource/sonarqube-scan-action@master
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-
-      # Install npm dependencies
+      # ---------------- Install Dependencies ----------------
       - name: Install dependencies
         run: npm install
-        
 
       # ---------------- Trivy FS Scan ----------------
       - name: Run Trivy File System Scan
         run: trivy fs . > trivyfs.txt
 
-
-
       # ---------------- Set Docker Image Tag ----------------
       - name: Set Docker Image Tag
         run: echo "IMAGE_TAG=${{ secrets.DOCKER_USERNAME }}/amazon:${{ github.run_number }}" >> $GITHUB_ENV
 
-      # ---------------- Build & Push Image ----------------
-      - name: Build Docker Image
-        run: |
-          docker rmi -f amazon $IMAGE_TAG || true
-          docker build -t amazon .
-          
-
-      - name: DockerHub Login
+      # ---------------- Docker Login ----------------
+      - name: Login to DockerHub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-          
+
+      # ---------------- Build & Push Image ----------------
       - name: Build Docker Image
-        run: docker build -t lokeshzenbook/amazon:latest .
+        run: docker build -t $IMAGE_TAG .
 
-      - name: Login to DockerHub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      - name: Push Docker Image
+        run: docker push $IMAGE_TAG
 
-      - name: Push Image
-        run: docker push lokeshzenbook/amazon:latest
-
-
-      # ---------------- Run Trivy scan ----------------
+      # ---------------- Trivy Image Scan ----------------
       - name: Run Trivy Image Scan
         run: |
           echo "🔍 Running Trivy image scan on $IMAGE_TAG"
 
-          # Scan the image for CVEs (ignore exit code so pipeline doesn’t fail on vulnerabilities)
           trivy image --exit-code 0 --format json -o trivy-image-report.json $IMAGE_TAG
 
-          # Convert JSON to HTML
           {
             echo "<html><body>"
             echo "<h2>Trivy Image Scan Report for $IMAGE_TAG</h2><pre>"
@@ -75,16 +62,13 @@ jobs:
             echo "</pre></body></html>"
           } > trivy-image-report.html
 
-
-
-
       # ---------------- Deploy Container ----------------
       - name: Deploy Container
         run: |
           docker rm -f amazon || true
           docker run -d --name amazon -p 80:80 $IMAGE_TAG
 
-      # ---------------- Upload Reports as Artifacts ----------------
+      # ---------------- Upload Reports ----------------
       - name: Upload Scan Reports
         uses: actions/upload-artifact@v4
         with:
@@ -93,7 +77,6 @@ jobs:
             trivyfs.txt
             trivy-image-report.json
             trivy-image-report.html
-            
 
       # ---------------- Email Notification ----------------
       - name: Send Email Notification
@@ -107,15 +90,12 @@ jobs:
           to: ${{ secrets.EMAIL_USER }}
           from: ${{ secrets.EMAIL_USER }}
           html_body: |
-            <p>This is a GitHub Actions amazon CICD pipeline status.</p>
-            <p>Workflow: ${{ github.workflow }}</p>
-            <p>Run Number: ${{ github.run_number }}</p>
-            <p>Status: ${{ job.status }}</p>
-            <p>Commit: ${{ github.sha }}</p>
-            <p>Triggered by: ${{ github.actor }}</p>
-            <p>Build URL: <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Build</a></p>
+            <p>Amazon CI/CD pipeline status</p>
+            <p><b>Status:</b> ${{ job.status }}</p>
+            <p><b>Run:</b> ${{ github.run_number }}</p>
+            <p><b>Commit:</b> ${{ github.sha }}</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Build</a></p>
           attachments: |
             trivyfs.txt
             trivy-image-report.json
             trivy-image-report.html
-
