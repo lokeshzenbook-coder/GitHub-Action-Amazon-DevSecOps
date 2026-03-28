@@ -10,14 +10,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------- Checkout ----------------
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          
+
       # ---------------- Install Dependencies ----------------
       - name: Install dependencies
         run: npm install
+
+      # ---------------- Install Trivy ----------------
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      # ---------------- Trivy Scan ----------------
+      - name: Run Trivy FS Scan
+        run: trivy fs . > trivyfs.txt
 
       # ---------------- Set Docker Image Tag ----------------
       - name: Set Docker Image Tag
@@ -43,8 +58,16 @@ jobs:
           docker rm -f amazon || true
           docker run -d --name amazon -p 80:80 $IMAGE_TAG
 
+      # ---------------- Upload Trivy Report ----------------
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivyfs.txt
+
       # ---------------- Email Notification ----------------
       - name: Send Email Notification
+        if: always()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -55,11 +78,13 @@ jobs:
           to: ${{ secrets.EMAIL_USER }}
           from: ${{ secrets.EMAIL_USER }}
           html_body: |
-            <p>Amazon CI/CD pipeline status</p>
+            <h3>Amazon CI/CD Pipeline Status</h3>
             <p><b>Status:</b> ${{ job.status }}</p>
             <p><b>Run:</b> ${{ github.run_number }}</p>
             <p><b>Commit:</b> ${{ github.sha }}</p>
-            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Build</a></p>
-          attachments: |
-            trivyfs.txt
-            
+            <p>
+              <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">
+                View Build Logs
+              </a>
+            </p>
+          attachments: trivyfs.txt
