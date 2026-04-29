@@ -1,0 +1,170 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/amazon
+  ECR_REPO: amazon
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # =========================
+      # CHECKOUT
+      # =========================
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # =========================
+      # INSTALL DEPENDENCIES
+      # =========================
+      - name: Install dependencies
+        run: npm install
+
+      # =========================
+      # INSTALL TRIVY
+      # =========================
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      # =========================
+      # TRIVY FS SCAN
+      # =========================
+      - name: Run Trivy FS Scan
+        run: trivy fs . -o trivy-fs.txt
+
+      # =========================
+      # SET IMAGE TAG
+      # =========================
+      - name: Set Image Tag
+        run: echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
+
+      # =========================
+      # DOCKER LOGIN
+      # =========================
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================
+      # BUILD IMAGE
+      # =========================
+      - name: Build Docker Image
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          docker build -t $IMAGE_NAME:latest .
+
+      # =========================
+      # TRIVY IMAGE SCAN
+      # =========================
+      - name: Scan Docker Image
+        run: trivy image $IMAGE_NAME:$IMAGE_TAG -o trivy-image.txt
+
+      # =========================
+      # PUSH TO DOCKER HUB
+      # =========================
+      - name: Push to Docker Hub
+        run: |
+          docker push $IMAGE_NAME:$IMAGE_TAG
+          docker push $IMAGE_NAME:latest
+
+      # =========================
+      # AWS CONFIGURATION
+      # =========================
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # =========================
+      # CREATE ECR REPO IF NOT EXISTS
+      # =========================
+      - name: Create ECR Repository if not exists
+        run: |
+          aws ecr describe-repositories --repository-names $ECR_REPO \
+          || aws ecr create-repository --repository-name $ECR_REPO
+
+      # =========================
+      # PUSH TO ECR
+      # =========================
+      - name: Push to ECR
+        run: |
+          ECR=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+          docker tag $IMAGE_NAME:$IMAGE_TAG $ECR/$ECR_REPO:$IMAGE_TAG
+          docker tag $IMAGE_NAME:latest $ECR/$ECR_REPO:latest
+
+          docker push $ECR/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR/$ECR_REPO:latest
+
+      # =========================
+      # DEPLOY CONTAINER (OPTIONAL LOCAL TEST)
+      # =========================
+      - name: Deploy Container
+        run: |
+          docker rm -f amazon || true
+          docker run -d --name amazon -p 80:80 $IMAGE_NAME:$IMAGE_TAG
+
+      # =========================
+      # UPLOAD REPORTS
+      # =========================
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            trivy-fs.txt
+            trivy-image.txt
+
+      # =========================
+      # EMAIL NOTIFICATION
+      # =========================
+      - name: Send Email Notification
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USER }}
+          password: ${{ secrets.EMAIL_PASS }}
+          subject: "Pipeline ${{ job.status }} 🚀"
+          to: ${{ secrets.EMAIL_USER }}
+          from: GitHub Actions
+          html_body: |
+            <h3>CI/CD Pipeline Status</h3>
+            <p><b>Status:</b> ${{ job.status }}</p>
+            <p><b>Run:</b> ${{ github.run_number }}</p>
+            <p><b>Commit:</b> ${{ github.sha }}</p>
+
+            <h4>Docker Image:</h4>
+            <p>${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}</p>
+
+            <h4>ECR Image:</h4>
+            <p>${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}</p>
+
+            <p>
+              <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">
+                View Logs
+              </a>
+            </p>
+          attachments: |
+            trivy-fs.txt
+            trivy-image.txt
